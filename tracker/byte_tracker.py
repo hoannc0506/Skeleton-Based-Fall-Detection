@@ -186,9 +186,9 @@ class BYTETracker(object):
         lost_stracks = []
         removed_stracks = []
         
-
-        scores = output_results[:, 6]
-        bboxes = xywh2xyxy(output_results[:, 2:6])
+        # output engine
+        scores = output_results[:, 4]
+        bboxes = output_results[:, :4]
         poses = output_results
 
             

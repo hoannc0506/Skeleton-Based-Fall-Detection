@@ -5,6 +5,28 @@ import time
 import numpy as np
 
 import torchvision
+from torchvision import transforms
+from torch.utils.data import Dataset
+
+class InferenceDataset(Dataset):
+    def __init__(self, img_paths, out_img_shape=(768, 960)):
+        self.img_paths = img_paths
+        self.out_img_shape = out_img_shape
+        
+    def __len__(self):
+        return len(self.img_paths)
+    
+    def __getitem__(self, index):
+        path = self.img_paths[index]
+        nimg = cv2.imread(path)
+        raw_img = nimg.copy()
+        
+        nimg = letterbox(nimg, self.out_img_shape, auto=False, stride=64)[0]
+        
+        nimg = transforms.ToTensor()(nimg)
+        
+        return nimg, raw_img
+#         return path  
 
 
 # Preprocess
