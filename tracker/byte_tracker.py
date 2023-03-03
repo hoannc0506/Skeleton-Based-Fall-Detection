@@ -187,8 +187,8 @@ class BYTETracker(object):
         removed_stracks = []
         
         # output engine
-        scores = output_results[:, 4]
-        bboxes = output_results[:, :4]
+        scores = output_results[:, 4].cpu().numpy()
+        bboxes = output_results[:, :4].cpu().numpy()
         poses = output_results
 
             

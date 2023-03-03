@@ -17,41 +17,8 @@ from tracker.byte_tracker import BYTETracker
 from collections import OrderedDict
 
 from tensorrt_inference import TRTInferenceEngine
-
-    
-class VideoReader(object):
-    '''
-        Read .mp4 video files
-    '''
-    def __init__(self, file_name, batch_size=8):
-        self.file_name = file_name
-        self.batch_size = batch_size
-        self.frame_cnt = 0
-
-    def __iter__(self):
-        self.cap = cv2.VideoCapture(self.file_name)
-        if not self.cap.isOpened():
-            raise IOError(f'Video {self.file_name} cannot be opened')
-        return self
-
-    def __next__(self):  
-        batch_imgs = []
-
-        for i in range(self.batch_size):
-            # grab 1 frame
-            self.cap.grab()
-#             self.frame_cnt += 1
-            
-            ret, img = self.cap.read()
-            if not ret:
-                raise StopIteration
-
-            batch_imgs.append(img)
-            self.frame_cnt += 1
-
-        return batch_imgs
-
-    
+from stream_webcam import WebcamVideoStream
+ 
 def preprocess_batch(list_nimgs, out_img_shape=(768,960)):
     '''
         Preprocess batch images for pose estimation
@@ -140,7 +107,7 @@ def fall_detection(kpt_data, model, img_shape=(768, 960)):
 if __name__ == '__main__':
     
     parser = argparse.ArgumentParser()
-    parser.add_argument('--video-path', type=str, default='demo/fall2.mp4')
+    parser.add_argument('--webcam-steam', type=str, default='rtmp://...')
     parser.add_argument('--pose-engine', type=str, default='pretrained/yolov7pose_bs8.engine')
     parser.add_argument('--lstm-weight', type=str, default='weights/keypoints_lstm_v1.pt')
     parser.add_argument('--detect-sequence', type=int, default=45)
@@ -151,6 +118,8 @@ if __name__ == '__main__':
     pose_engine = args.pose_engine
     lstm_weight = args.lstm_weight
     DETECT_SEQUENCE = args.detect_sequence
+    
+    stream = WebcamVideoStream("rtmp://live-10-hcm.fcam.vn:1956/168dda906d8b52b2?t=1675849366&tk=3dd50d058bed75717405eb9bff109c4451024a3d3eefc0de6c328ff83060e768/ViMkfBSt-OsytxdNQ-ZlXJqT0g-KQXhJBje-v2")
     
     print(vars(args))
     

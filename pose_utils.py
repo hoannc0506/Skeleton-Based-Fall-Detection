@@ -8,6 +8,32 @@ import torchvision
 from torchvision import transforms
 from torch.utils.data import Dataset
 
+
+class VideoReader(object):
+    '''
+        Read .mp4 video files
+    '''
+    def __init__(self, file_name):
+        self.file_name = file_name
+        self.frame_cnt = 0
+
+    def __iter__(self):
+        self.cap = cv2.VideoCapture(self.file_name)
+        if not self.cap.isOpened():
+            raise IOError(f'Video {self.file_name} cannot be opened')
+        return self
+
+    def __next__(self):
+        # for i in range(3):
+        #     self.cap.grab()
+            
+        was_read, img = self.cap.read()
+        if not was_read:
+            raise StopIteration
+        self.frame_cnt += 1
+        return img
+    
+
 class InferenceDataset(Dataset):
     def __init__(self, img_paths, out_img_shape=(768, 960)):
         self.img_paths = img_paths
@@ -30,7 +56,7 @@ class InferenceDataset(Dataset):
 
 
 # Preprocess
-def letterbox(im, new_shape=(768, 960), color=(114, 114, 114), auto=True, scaleup=True, stride=64):
+def letterbox(im, new_shape=(768, 960), color=(114, 114, 114), auto=False, scaleup=True, stride=64):
     '''
     Pre process image for pose estimation
     '''
@@ -96,15 +122,12 @@ def output_to_kpt(output):
     return np.array(targets)
 
 
-def non_max_suppression_kpt(prediction, conf_thres=0.25, iou_thres=0.45, classes=None, agnostic=False, multi_label=False,
-                        labels=(), kpt_label=False, nc=None, nkpt=None):
+def nms_kpt(prediction, conf_thres=0.25, iou_thres=0.45, nc=1, nkpt=17):
     """Runs Non-Maximum Suppression (NMS) on inference results
 
     Returns:
-         list of detections, on (n,6) tensor per image [xyxy, conf, cls]
+         list of detections, on (n,57) tensor per image [xyxy, conf, keypoints]
     """
-    if nc is None:
-        nc = prediction.shape[2] - 5  if not kpt_label else prediction.shape[2] - 56 # number of classes
     xc = prediction[..., 4] > conf_thres  # candidates
 
     # Settings
@@ -113,24 +136,11 @@ def non_max_suppression_kpt(prediction, conf_thres=0.25, iou_thres=0.45, classes
     max_nms = 30000  # maximum number of boxes into torchvision.ops.nms()
     time_limit = 10.0  # seconds to quit after
     redundant = True  # require redundant detections
-    multi_label &= nc > 1  # multiple labels per box (adds 0.5ms/img)
-    merge = False  # use merge-NMS
 
     t = time.time()
-    output = [torch.zeros((0,6), device=prediction.device)] * prediction.shape[0]
+    output = [torch.zeros((0,6))] * prediction.shape[0]
     for xi, x in enumerate(prediction):  # image index, image inference
-        # Apply constraints
-        # x[((x[..., 2:4] < min_wh) | (x[..., 2:4] > max_wh)).any(1), 4] = 0  # width-height
         x = x[xc[xi]]  # confidence
-
-        # Cat apriori labels if autolabelling
-        if labels and len(labels[xi]):
-            l = labels[xi]
-            v = torch.zeros((len(l), nc + 5), device=x.device)
-            v[:, :4] = l[:, 1:5]  # box
-            v[:, 4] = 1.0  # conf
-            v[range(len(l)), l[:, 0].long() + 5] = 1.0  # cls
-            x = torch.cat((x, v), 0)
 
         # If none remain process next image
         if not x.shape[0]:
@@ -141,49 +151,24 @@ def non_max_suppression_kpt(prediction, conf_thres=0.25, iou_thres=0.45, classes
 
         # Box (center x, center y, width, height) to (x1, y1, x2, y2)
         box = xywh2xyxy(x[:, :4])
-
-        # Detections matrix nx6 (xyxy, conf, cls)
-        if multi_label:
-            i, j = (x[:, 5:] > conf_thres).nonzero(as_tuple=False).T
-            x = torch.cat((box[i], x[i, j + 5, None], j[:, None].float()), 1)
-        else:  # best class only
-            if not kpt_label:
-                conf, j = x[:, 5:].max(1, keepdim=True)
-                x = torch.cat((box, conf, j.float()), 1)[conf.view(-1) > conf_thres]
-            else:
-                kpts = x[:, 6:]
-                conf, j = x[:, 5:6].max(1, keepdim=True)
-                x = torch.cat((box, conf, j.float(), kpts), 1)[conf.view(-1) > conf_thres]
-
-
-        # Filter by class
-        if classes is not None:
-            x = x[(x[:, 5:6] == torch.tensor(classes, device=x.device)).any(1)]
-
-        # Apply finite constraint
-        # if not torch.isfinite(x).all():
-        #     x = x[torch.isfinite(x).all(1)]
+        kpts = x[:, 6:]
+        conf, j = x[:, 5:6].max(1, keepdim=True)
+        x = torch.cat((box, conf, j.float(), kpts), 1)[conf.view(-1) > conf_thres]
 
         # Check shape
         n = x.shape[0]  # number of boxes
         if not n:  # no boxes
             continue
+            
         elif n > max_nms:  # excess boxes
             x = x[x[:, 4].argsort(descending=True)[:max_nms]]  # sort by confidence
 
         # Batched NMS
-        c = x[:, 5:6] * (0 if agnostic else max_wh)  # classes
+        c = x[:, 5:6] * max_wh
         boxes, scores = x[:, :4] + c, x[:, 4]  # boxes (offset by class), scores
         i = torchvision.ops.nms(boxes, scores, iou_thres)  # NMS
         if i.shape[0] > max_det:  # limit detections
             i = i[:max_det]
-        if merge and (1 < n < 3E3):  # Merge NMS (boxes merged using weighted mean)
-            # update boxes as boxes(i,4) = weights(i,n) * boxes(n,4)
-            iou = box_iou(boxes[i], boxes) > iou_thres  # iou matrix
-            weights = iou * scores[None]  # box weights
-            x[i, :4] = torch.mm(weights, x[:, :4]).float() / weights.sum(1, keepdim=True)  # merged boxes
-            if redundant:
-                i = i[iou.sum(1) > 1]  # require redundancy
 
         output[xi] = x[i]
         if (time.time() - t) > time_limit:
@@ -236,9 +221,11 @@ def visualize_skeletons(nimg, skeletons, frame_idx=None):
     skeletons: detected skeletons
     frame_idx: frame index
     '''
-    
-    bboxes = xywh2xyxy(skeletons[:, 2:6])
-    poses = skeletons[:, 7:]
+    if isinstance(skeletons, torch.Tensor):
+        skeletons = skeletons.cpu().numpy()
+        
+    bboxes = skeletons[:, :4]
+    poses = skeletons[:, 6:]
     
     for idx in range(skeletons.shape[0]):
         plot_skeleton_kpts(nimg, poses[idx].T, 3)

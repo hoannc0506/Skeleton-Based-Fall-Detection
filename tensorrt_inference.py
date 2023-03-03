@@ -9,11 +9,6 @@ import torchvision
 import argparse
 
 import numpy as np
-import pycuda.driver as cuda
-import pycuda.autoinit
-
-
-
 
 class TRTInferenceEngine:
     def __init__(self, engine_file_path, device='cpu', verbose=True):
@@ -85,32 +80,34 @@ class TRTInferenceEngine:
         return outputs
 
 
-
-
     
 if __name__ =='__main__':
-    
+    import pycuda.autoinit
+    import pycuda.driver as cuda
+    from torch.utils.data import DataLoader
+    from pose_utils import *
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--engine-path', type=str, default='pretrained/demo.engine')
+    parser.add_argument('--folder-path', type=str, default='../dataset/Fall backwards')
     parser.add_argument('--batch-size', type=int, default=8)
 
     args = parser.parse_args()
     
     engine_path = args.engine_path
     batch_size = args.batch_size
+    folder_path = args.folder_path
     
-    dataset_dir = '../dataset/Fall backwards'
-    frame_paths = sorted(glob.glob(dataset_dir+'/*.png'))
+    frame_paths = sorted(glob.glob(folder_path+'/*.png'))
+    inference_dataset = InferenceDataset(frame_paths)
+    loader = DataLoader(inference_dataset, batch_size=batch_size, shuffle=False)
+    
     
     device = 'cuda:0'
     engine = TRTInferenceEngine(
         engine_path,
         device
     )
-    
-    from torch.utils.data import DataLoader
-    inference_dataset = InferenceDataset(frame_paths)
-    loader = DataLoader(inference_dataset, batch_size=batch_size, shuffle=False)
     
     t_total = 0
     skeletons = []
@@ -119,11 +116,11 @@ if __name__ =='__main__':
         t_s = time.time()  
         batch_inp = batch_inp.to(device)
         output_batch = engine(batch_inp)[0]
-        output_batch = non_max_suppression_kpt(output_batch, conf_thres=0.15, iou_thres=0.5, nc=1, nkpt=17)
-       
-        t_total += time.time() - t_s
+        output_batch = nms_kpt(output_batch, conf_thres=0.15, iou_thres=0.5, nc=1, nkpt=17)
+        print(output_batch[0].shape)
         
-   
+        t_total += time.time() - t_s
+       
     print(f'Process time: {t_total}')
     print(f'Num frame {len(inference_dataset)}')
     print(f'FPS: {len(inference_dataset)/t_total}')
