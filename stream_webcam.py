@@ -18,25 +18,25 @@ class WebcamVideoStream:
         # initialize the video camera stream and read the first frame        
         # from the stream        
         self.queue = Queue(maxsize=200)
-        self.stream = cv2.VideoCapture(src)        
-        self.stream.set(cv2.CAP_PROP_BUFFERSIZE, 3)        
-        (self.grabbed, self.frame) = self.stream.read()        
+        # self.stream = cv2.VideoCapture(src)        
+        # self.stream.set(cv2.CAP_PROP_BUFFERSIZE, 3)        
+        # (self.grabbed, self.frame) = self.stream.read()        
         self.frame = None        
         self.grabbed = False        
         # initialize the thread name        
-#         command = [ 'ffmpeg',
-#             # '-rtsp_transport', 'tcp',            
-# #                     '-hwaccel', 'cuda',
-#                     '-c:v', 'h264_cuvid',
-#                     '-i', src,
-#                     '-pix_fmt', 'rgb24',  # brg24 for matching OpenCV            
-#                     # '-filter:v', 'fps=6',
-#                     '-vsync', '0',
-#                     #'-hwaccel_output_format', 'cuda',
-#                     '-f', 'rawvideo',
-#                     '-loglevel', 'error',
-#                     'pipe:' ]
-#         self.process = sp.Popen(command, stdout=sp.PIPE, bufsize=10**8) 
+        command = [ 'ffmpeg',
+            # '-rtsp_transport', 'tcp',            
+            '-hwaccel', 'cuda',
+            '-c:v', 'h264_cuvid',
+            '-i', src,
+            '-pix_fmt', 'rgb24',  # brg24 for matching OpenCV            
+            # '-filter:v', 'fps=6',
+            '-vsync', '0',
+#             '-hwaccel_output_format', 'cuda',
+            '-f', 'rawvideo',
+            '-loglevel', 'error',
+            'pipe:' ]
+        self.process = sp.Popen(command, stdout=sp.PIPE, bufsize=10**8) 
         # initialize the variable used to indicate if the thread should        
         # be stopped        
         self.stopped = False        
@@ -59,12 +59,13 @@ class WebcamVideoStream:
             if self.stopped:
                 return            
             # otherwise, read the next frame from the stream            
-            (self.grabbed, self.frame) = self.stream.read()            
-#             buffer = self.process.stdout.read(self.W*self.H*3)
-#             if len(buffer) != self.W*self.H*3:
-#                 continue            
-#             img = np.frombuffer(buffer, np.uint8).reshape(self.H, self.W, 3)
-#             self.grabbed, self.frame = True, img            
+#             (self.grabbed, self.frame) = self.stream.read()  
+#             print(self.grabbed)
+            buffer = self.process.stdout.read(self.W*self.H*3)
+            if len(buffer) != self.W*self.H*3:
+                continue            
+            img = np.frombuffer(buffer, np.uint8).reshape(self.H, self.W, 3)
+            self.grabbed, self.frame = True, img            
             self.frame = cv2.cvtColor(self.frame, cv2.COLOR_RGB2BGR)
             # if self.queue.qsize() == 200:            
             #     self.queue.get(0)           
@@ -88,7 +89,7 @@ class WebcamVideoStream:
         self.stopped = True
 
 if __name__== "__main__": 
-    stream = WebcamVideoStream("rtmp://live-10-hcm.fcam.vn:1956/63eef9bd282e0ab5mye8?t=1671440944&tk=36e7618edfb8c695c9ea5b5245778dce8a57bc45bb93e19098790fd03eeab6aa/KeYm2RCH-AhrStRPD-9g5Kioe1-PbAvhlmw-v2")
+    stream = WebcamVideoStream("rtmp://live-10-hcm.fcam.vn:1956/63eef9bd282e0ab5mye8?t=1671440944&tk=36e7618edfb8c695c9ea5b5245778dce8a57bc45bb93e19098790fd03eeab6aa/KeYm2RCH-AhrStRPD-9g5Kioe1-PbAvhlmw-v2").start()
     
     out_video = []
     frame_cnt = 0

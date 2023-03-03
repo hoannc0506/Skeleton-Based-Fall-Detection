@@ -114,12 +114,13 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     
-    video_path = args.video_path
+#     video_path = args.video_path
     pose_engine = args.pose_engine
     lstm_weight = args.lstm_weight
     DETECT_SEQUENCE = args.detect_sequence
     
     stream = WebcamVideoStream("rtmp://live-10-hcm.fcam.vn:1956/168dda906d8b52b2?t=1675849366&tk=3dd50d058bed75717405eb9bff109c4451024a3d3eefc0de6c328ff83060e768/ViMkfBSt-OsytxdNQ-ZlXJqT0g-KQXhJBje-v2")
+    stream.start()
     
     print(vars(args))
     
@@ -145,9 +146,6 @@ if __name__ == '__main__':
     lstm_model.load_state_dict(ckpt['weight'])
     lstm_model = lstm_model.eval().to(device)
     
-    # init video reader
-    img_provider = VideoReader(video_path)
-   
     # init pose tracker
     tracker = PoseTracker()
 
@@ -155,72 +153,90 @@ if __name__ == '__main__':
     t_start = time.time()
     visualize_imgs = []
     
-    for batch_imgs in img_provider:
-        
-        batch_imgs, raw_imgs = preprocess_batch(batch_imgs)
-        batch_imgs = batch_imgs.to(device)
-        
-        # pose estimation
-        output_batch = engine(batch_imgs)[0]
-        output_batch = nms_kpt(output_batch, conf_thres=0.15, iou_thres=0.5)
-        
-        for idx, op in enumerate(output_batch):
-            if op.shape[0] == 0:
-                continue
+    
+    batch_size = 8
+    batch_cnt = 0
+    frame_cnt = 0
+    batch_list=[]
+    try:
+        while True:
             
-            #visualize
-            raw_imgs[idx] = visualize_skeletons(raw_imgs[idx], op)
-            
-            # update pose tracker
-            tracker.update(op)
-            
-            # checking pose sequence for fall detection    
-            for t in tracker.online_targets:
-                obj_id = int(t.track_id)
-                objposes = tracker.pose_sequences[obj_id]
+            data, _ = stream.read()
 
-                if len(objposes) < DETECT_SEQUENCE:
-                    print(f'object {obj_id} | poses length {len(objposes)}')
+            ret, frame = data
+            batch_list.append(frame)
+            frame_cnt +=1
+            batch_cnt +=1
+
+            if not ret:
+                time.sleep(0.1)
+                continue  
+
+            if batch_cnt < batch_size:
+                continue
+                
+            batch_imgs, raw_imgs = preprocess_batch(batch_list)
+            
+            batch_imgs = batch_imgs.to(device)
+
+            # pose estimation
+            output_batch = engine(batch_imgs)[0]
+            output_batch = nms_kpt(output_batch, conf_thres=0.15, iou_thres=0.5)
+
+            for idx, op in enumerate(output_batch):
+                if op.shape[0] == 0:
                     continue
 
-                input_lstm = torch.cat(objposes, dim=0)
-                predict = fall_detection(input_lstm, lstm_model)
-                predict_class = action_labels[torch.argmax(predict)]
-                
-#                 import pdb;pdb.set_trace()
-                # visualize
-                cv2.putText(raw_imgs[idx], predict_class, t.tlwh[:2].astype(int), 
-                            cv2.FONT_HERSHEY_PLAIN, 1.5, (0, 255, 0),
-                            thickness=3)
-                
-                # remove old pose from pose sequence
-                tracker.pose_sequences[obj_id].remove(objposes[0])
+                #visualize
+                raw_imgs[idx] = visualize_skeletons(raw_imgs[idx], op)
 
-                print(f'Fall detecting: object {obj_id} | predict {predict_class}')
+                # update pose tracker
+                tracker.update(op)
+
+                # checking pose sequence for fall detection    
+                for t in tracker.online_targets:
+                    obj_id = int(t.track_id)
+                    objposes = tracker.pose_sequences[obj_id]
+
+                    if len(objposes) < DETECT_SEQUENCE:
+                        print(f'object {obj_id} | poses length {len(objposes)}')
+                        continue
+
+                    input_lstm = torch.cat(objposes, dim=0)
+                    predict = fall_detection(input_lstm, lstm_model)
+                    predict_class = action_labels[torch.argmax(predict)]
+
+    #                 import pdb;pdb.set_trace()
+                    # visualize
+                    cv2.putText(raw_imgs[idx], predict_class, t.tlwh[:2].astype(int), 
+                                cv2.FONT_HERSHEY_PLAIN, 1.5, (0, 255, 0),
+                                thickness=3)
+
+                    # remove old pose from pose sequence
+                    tracker.pose_sequences[obj_id].remove(objposes[0])
+
+                    print(f'Fall detecting: object {obj_id} | predict {predict_class}')
+
+                visualize_imgs.append(cv2.cvtColor(raw_imgs[idx], cv2.COLOR_BGR2RGB))
                 
-            visualize_imgs.append(cv2.cvtColor(raw_imgs[idx], cv2.COLOR_BGR2RGB))
-            # end batch
+                # end batch
+                
+            batch_list = []
             
-        # end video
-                  
-        t_end = time.time()        
+    except KeyboardInterrupt:
+        # sumarize
+        num_frames = frame_cnt
+        t_end = time.time()
+        t_total = t_end - t_start
 
-        if t_end - t_start > 50:
-            break
-    
-    # sumarize
-    num_frames = img_provider.frame_cnt
-    t_end = time.time()
-    t_total = t_end - t_start
-    
-    print(f'Num frames: {num_frames}')
-    print(f'Pipeline FPS: {num_frames/t_total}')
-    
-    # create video
-    import moviepy.editor as mpy    
-    vid = mpy.ImageSequenceClip(visualize_imgs, fps=15)
-    video_name = video_path.split('/')[-1].split('.')[0]
-    vid.write_videofile(f'demo/{video_name}_result.mp4')
-    
-    del engine
+        print(f'Num frames: {num_frames}')
+        print(f'Pipeline FPS: {num_frames/t_total}')
+
+        # create video
+        import moviepy.editor as mpy    
+        vid = mpy.ImageSequenceClip(visualize_imgs, fps=15)
+        video_name = 'demo_stream'
+        vid.write_videofile(f'demo/{video_name}_result.mp4')
+
+        del engine
     
