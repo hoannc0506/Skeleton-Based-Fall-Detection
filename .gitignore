@@ -1,7 +1,6 @@
 .ipynb_checkpoints/
 weights/
 __pycache__/
-*.png
 *.jpg
 *.pt
 *.pth
