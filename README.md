@@ -1,5 +1,4 @@
 # Fall detection
-This branch relate to training model fall detection
 
 ## Pipeline
 ![pipeline](./results/pipeline.png)
