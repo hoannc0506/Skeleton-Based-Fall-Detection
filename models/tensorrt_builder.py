@@ -1,11 +1,13 @@
 import tensorrt as trt
 import logging
+import argparse
 
 class TRTEngineBuilder:
-    def __init__(self, onnx_file_path, min_shapes, opt_shapes, max_shapes, fp16=False, int8=False, gpu_fallback=False, save_path='', verbose=True):
+    def __init__(self, onnx_file_path, input_name, min_shapes, opt_shapes, max_shapes, fp16=False, int8=False, gpu_fallback=False, save_path='', verbose=True):
         trt.init_libnvinfer_plugins(None, "")
         self.TRT_LOGGER = trt.Logger(trt.Logger.VERBOSE)
         self.onnx_file_path = onnx_file_path
+        self.input_name = input_name
         self.min_shapes = min_shapes
         self.opt_shapes = opt_shapes
         self.max_shapes = max_shapes
@@ -26,7 +28,7 @@ class TRTEngineBuilder:
             parser.parse(model.read())
         # Define the optimization profile
         profile = builder.create_optimization_profile()
-        profile.set_shape("images", self.min_shapes, self.opt_shapes, self.max_shapes)
+        profile.set_shape(self.input_name, self.min_shapes, self.opt_shapes, self.max_shapes)
         # Set config
         if self.fp16:
             config.set_flag(trt.BuilderFlag.FP16)
@@ -52,6 +54,7 @@ if __name__ == '__main__':
     
     parser = argparse.ArgumentParser()
     parser.add_argument('--onnx-path', type=str, default='pretrained/demo.onnx')
+    parser.add_argument('--onnx-input', type=str, default='images')        
     parser.add_argument('--save-path', type=str, default='pretrained/saved.engine')    
     parser.add_argument('--min-bs', type=int, default=1)
     parser.add_argument('--max-bs', type=int, default=1)
@@ -61,16 +64,18 @@ if __name__ == '__main__':
 
     
     args = parser.parse_args()
-    onnx_path = args.onn_path
+    onnx_path = args.onnx_path
+    onnx_input = args.onnx_input
     save_path = args.save_path
     min_bs = args.min_bs
     max_bs = args.max_bs
     optim_bs = args.optim_bs
     h = args.img_height
-    w = args.width
+    w = args.img_width
     
     trtbuilder = TRTEngineBuilder(
         onnx_file_path=onnx_path,
+        input_name=onnx_input,
         min_shapes=(min_bs, 3, h, w),
         opt_shapes=(optim_bs, 3, h, w),
         max_shapes=(max_bs, 3, h, w),

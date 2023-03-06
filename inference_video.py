@@ -10,22 +10,25 @@ import numpy as np
 import argparse
 import logging
 
-from lstm_models import KeypointsLSTM
-from pose_utils import *
+from collections import OrderedDict
+from models.lstm_models import KeypointsLSTM
+from models.tensorrt_inference import TRTInferenceEngine
+
+from utils.general import *
+from utils.stream_webcam import WebcamVideoStream
 
 from tracker.byte_tracker import BYTETracker
-from collections import OrderedDict
-
-from tensorrt_inference import TRTInferenceEngine
 
     
 class VideoReader(object):
     '''
         Read .mp4 video files
     '''
-    def __init__(self, file_name, batch_size=8):
+    def __init__(self, file_name, grab_frame=1, batch_size=8):
         self.file_name = file_name
         self.batch_size = batch_size
+        self.grab_frame = grab_frame
+        self.batch_cnt = 0
         self.frame_cnt = 0
 
     def __iter__(self):
@@ -39,8 +42,9 @@ class VideoReader(object):
 
         for i in range(self.batch_size):
             # grab 1 frame
-            self.cap.grab()
-#             self.frame_cnt += 1
+            for idx in range(self.grab_frame):
+                self.cap.grab()
+                self.frame_cnt += 1
             
             ret, img = self.cap.read()
             if not ret:
@@ -48,38 +52,17 @@ class VideoReader(object):
 
             batch_imgs.append(img)
             self.frame_cnt += 1
-
+            
+        self.batch_cnt += 1
         return batch_imgs
 
-    
-def preprocess_batch(list_nimgs, out_img_shape=(768,960)):
-    '''
-        Preprocess batch images for pose estimation
 
-        input: list cv image
-        output: 
-            tensor image shape [batch, 3, heigth, width] scale [0,1]
-            list raw image for visualization
-    '''
-    out_batch = []
-    raw_imgs = []
-    for nimg in list_nimgs:
-        nimg = letterbox(nimg, out_img_shape, stride=64)[0]
-        raw_imgs.append(nimg.copy())
-        
-        nimg = transforms.ToTensor()(nimg)
-        
-        out_batch.append(nimg.unsqueeze(0))
-    
-    return torch.cat(out_batch, dim=0), raw_imgs
-      
-    
 class PoseTracker():
     '''
         Object tracking for fall detection
     '''
-    def __init__(self, track_thresh=0.5, match_thresh=0.7, track_buffer=30, 
-                       frame_rate=30, img_shape=(768,960)):
+    def __init__(self, track_thresh=0.6, match_thresh=0.6, track_buffer=30, 
+                       frame_rate=15, img_shape=(768,960)):
         
         self.bytetrack = BYTETracker(track_thresh, match_thresh, 
                                        track_buffer, frame_rate)
@@ -109,13 +92,38 @@ class PoseTracker():
             rm_id = int(rm_obj.track_id)
             if rm_id in self.pose_sequences:
                 del self.pose_sequences[rm_id]
+
                 
-                     
-                
-def fall_detection(kpt_data, model, img_shape=(768, 960)):
+def preprocess_batch(list_nimgs, out_img_shape=(768,960)):
     '''
-        input: list tensor keypoints data of 1 person, model 
-        output: is falling detected
+        Preprocess batch images for pose estimation
+
+        input: list cv image
+        output: 
+            tensor image shape [batch, 3, heigth, width] scale [0,1]
+            list raw image for visualization
+    '''
+    out_batch = []
+    raw_imgs = []
+    for nimg in list_nimgs:
+        nimg = letterbox(nimg, out_img_shape, stride=64)[0]
+        raw_imgs.append(nimg.copy())
+        
+        nimg = transforms.ToTensor()(nimg)
+        
+        out_batch.append(nimg.unsqueeze(0))
+    
+    return torch.cat(out_batch, dim=0), raw_imgs                     
+
+
+def detect_fall(kpt_data, model, img_shape=(768, 960)):
+    '''
+        input 
+            kpt_data: tensor keypoints data of 1 person shape [num_frame, 38]
+            model: keypoint_lstm model
+            
+        output: 
+            predict
     '''
     # preprocess
     bbox = xyxy2xywh(kpt_data[:, :4])
@@ -124,6 +132,7 @@ def fall_detection(kpt_data, model, img_shape=(768, 960)):
     
     # center kpts data
     h,w = img_shape
+    
     bbox = bbox / torch.tensor([w,h,w,h], device=kpt_data.device)
     kpt_x = (kpt_x - 0.5*w) / (0.5*w)
     kpt_y = (kpt_y - 0.5*h) / (0.5*h)
@@ -134,22 +143,123 @@ def fall_detection(kpt_data, model, img_shape=(768, 960)):
     with torch.no_grad():
         predict = model(kpt_data)
         
-    return predict       
+    return predict 
+
+
+def inference(img_provider, engine, lstm_model, tracker, device, img_shape, sequence_length, labels, visualize=False):
+    
+    # inference
+    t_start = time.time()
+    visualize_imgs = []
+    predicts = []
+    
+    for batch_imgs in img_provider:
+        
+        batch_imgs, raw_imgs = preprocess_batch(batch_imgs, out_img_shape=img_shape)
+        batch_imgs = batch_imgs.to(device)
+        
+        # pose estimation
+        output_batch = engine(batch_imgs)[0]
+        output_batch = nms_kpt(output_batch, conf_thres=0.15, iou_thres=0.5)
+        
+        for idx, op in enumerate(output_batch):
+            if op.shape[0] == 0:
+                continue
+            
+            #visualize
+            raw_imgs[idx] = visualize_skeletons(raw_imgs[idx], op, frame_idx=(img_provider.frame_cnt-8+idx))
+            
+            # update pose tracker
+            tracker.update(op)
+            
+            # checking pose sequence for fall detection    
+            for t in tracker.online_targets:
+#                 import pdb; pdb.set_trace()
+                
+                obj_id = int(t.track_id)
+                objposes = tracker.pose_sequences[obj_id]
+                
+                # visualize
+                cv2.putText(raw_imgs[idx], str(obj_id), t.mean[:2].astype(int),
+                            cv2.FONT_HERSHEY_PLAIN, 1.5, (0, 0, 255),
+                            thickness=3)
+
+                if len(objposes) < sequence_length:
+                    print(f'object {obj_id} | poses length {len(objposes)}')
+                    continue
+
+                input_lstm = torch.cat(objposes, dim=0)
+                
+                # detect fall
+                predict = detect_fall(input_lstm, lstm_model, img_shape=img_shape)
+                
+                predict_class = labels[torch.argmax(predict)]
+                predicts.append(torch.argmax(predict))
+                
+                # visualize
+                cv2.putText(raw_imgs[idx], predict_class, t.tlwh[:2].astype(int),
+                            cv2.FONT_HERSHEY_PLAIN, 1.5, (0, 255, 0),
+                            thickness=3)
+                
+                # remove old pose from pose sequence
+                tracker.pose_sequences[obj_id].remove(objposes[0])
+
+                print(f'Fall detecting: object {obj_id} | predict {predict_class} {torch.max(predict)}')
+                
+            visualize_imgs.append(cv2.cvtColor(raw_imgs[idx], cv2.COLOR_BGR2RGB))
+            # end batch
+            
+        # end video
+                  
+        t_end = time.time()
+        if t_end - t_start > 50:
+            break
+    
+    # sumarize
+    num_frames = img_provider.frame_cnt
+    num_batchs = img_provider.batch_cnt
+    batch_size = img_provider.batch_size
+    t_end = time.time()
+    t_total = t_end - t_start
+    
+    print(f'Num frames: {num_frames}')
+    print(f'Num batchs: {num_batchs}')
+    print(f'Pipeline FPS: {(num_batchs*batch_size)/t_total}')
+    
+    if visualize:
+    # create video
+        import moviepy.editor as mpy    
+        vid = mpy.ImageSequenceClip(visualize_imgs, fps=10)
+        video_name = video_path.split('/')[-1].split('.')[0]
+        save_path = f'results/{video_name}_result.mp4'
+        vid.write_videofile(save_path)
+    
+    
+    return predicts
+    
 
 
 if __name__ == '__main__':
     
     parser = argparse.ArgumentParser()
     parser.add_argument('--video-path', type=str, default='demo/fall2.mp4')
-    parser.add_argument('--pose-engine', type=str, default='pretrained/yolov7pose_bs8.engine')
+    parser.add_argument('--grab-frame', type=int, default=1)
+    parser.add_argument('--pose-engine', type=str, default='pretrained/yolov5-l6-pose-bs8.engine')
     parser.add_argument('--lstm-weight', type=str, default='weights/keypoints_lstm_v1.pt')
+    parser.add_argument('--img-height', type=int, default=768)
+    parser.add_argument('--img-width', type=int, default=960)    
     parser.add_argument('--detect-sequence', type=int, default=45)
+    parser.add_argument('--visualize', action='store_true')
+
 
     args = parser.parse_args()
     
     video_path = args.video_path
     pose_engine = args.pose_engine
     lstm_weight = args.lstm_weight
+    img_shape = (args.img_height, args.img_width)
+    is_visualize = args.visualize
+    grab_frame = args.grab_frame
     DETECT_SEQUENCE = args.detect_sequence
     
     print(vars(args))
@@ -176,82 +286,15 @@ if __name__ == '__main__':
     lstm_model.load_state_dict(ckpt['weight'])
     lstm_model = lstm_model.eval().to(device)
     
-    # init video reader
-    img_provider = VideoReader(video_path)
-   
     # init pose tracker
-    tracker = PoseTracker()
-
+    tracker = PoseTracker(track_thresh=0.5, match_thresh=0.7, img_shape=img_shape)
+    
+    # init video reader
+    video_reader = VideoReader(video_path, grab_frame=grab_frame)
+    
     # inference
-    t_start = time.time()
-    visualize_imgs = []
-    
-    for batch_imgs in img_provider:
-        
-        batch_imgs, raw_imgs = preprocess_batch(batch_imgs)
-        batch_imgs = batch_imgs.to(device)
-        
-        # pose estimation
-        output_batch = engine(batch_imgs)[0]
-        output_batch = nms_kpt(output_batch, conf_thres=0.15, iou_thres=0.5)
-        
-        for idx, op in enumerate(output_batch):
-            if op.shape[0] == 0:
-                continue
-            
-            #visualize
-            raw_imgs[idx] = visualize_skeletons(raw_imgs[idx], op)
-            
-            # update pose tracker
-            tracker.update(op)
-            
-            # checking pose sequence for fall detection    
-            for t in tracker.online_targets:
-                obj_id = int(t.track_id)
-                objposes = tracker.pose_sequences[obj_id]
-
-                if len(objposes) < DETECT_SEQUENCE:
-                    print(f'object {obj_id} | poses length {len(objposes)}')
-                    continue
-
-                input_lstm = torch.cat(objposes, dim=0)
-                predict = fall_detection(input_lstm, lstm_model)
-                predict_class = action_labels[torch.argmax(predict)]
-                
-#                 import pdb;pdb.set_trace()
-                # visualize
-                cv2.putText(raw_imgs[idx], predict_class, t.tlwh[:2].astype(int), 
-                            cv2.FONT_HERSHEY_PLAIN, 1.5, (0, 255, 0),
-                            thickness=3)
-                
-                # remove old pose from pose sequence
-                tracker.pose_sequences[obj_id].remove(objposes[0])
-
-                print(f'Fall detecting: object {obj_id} | predict {predict_class}')
-                
-            visualize_imgs.append(cv2.cvtColor(raw_imgs[idx], cv2.COLOR_BGR2RGB))
-            # end batch
-            
-        # end video
-                  
-        t_end = time.time()        
-
-        if t_end - t_start > 50:
-            break
-    
-    # sumarize
-    num_frames = img_provider.frame_cnt
-    t_end = time.time()
-    t_total = t_end - t_start
-    
-    print(f'Num frames: {num_frames}')
-    print(f'Pipeline FPS: {num_frames/t_total}')
-    
-    # create video
-    import moviepy.editor as mpy    
-    vid = mpy.ImageSequenceClip(visualize_imgs, fps=15)
-    video_name = video_path.split('/')[-1].split('.')[0]
-    vid.write_videofile(f'demo/{video_name}_result.mp4')
+    output = inference(video_reader, engine, lstm_model, tracker, device, 
+                       img_shape, sequence_length=DETECT_SEQUENCE, visualize=is_visualize)
     
     del engine
     

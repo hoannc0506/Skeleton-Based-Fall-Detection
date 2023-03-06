@@ -9,31 +9,6 @@ from torchvision import transforms
 from torch.utils.data import Dataset
 
 
-class VideoReader(object):
-    '''
-        Read .mp4 video files
-    '''
-    def __init__(self, file_name):
-        self.file_name = file_name
-        self.frame_cnt = 0
-
-    def __iter__(self):
-        self.cap = cv2.VideoCapture(self.file_name)
-        if not self.cap.isOpened():
-            raise IOError(f'Video {self.file_name} cannot be opened')
-        return self
-
-    def __next__(self):
-        # for i in range(3):
-        #     self.cap.grab()
-            
-        was_read, img = self.cap.read()
-        if not was_read:
-            raise StopIteration
-        self.frame_cnt += 1
-        return img
-    
-
 class InferenceDataset(Dataset):
     def __init__(self, img_paths, out_img_shape=(768, 960)):
         self.img_paths = img_paths

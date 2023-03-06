@@ -10,37 +10,16 @@ import numpy as np
 import argparse
 import logging
 
-from lstm_models import KeypointsLSTM
-from pose_utils import *
+from collections import OrderedDict
+from models.lstm_models import KeypointsLSTM
+from models.tensorrt_inference import TRTInferenceEngine
+
+from utils.general import *
+from utils.stream_webcam import WebcamVideoStream
 
 from tracker.byte_tracker import BYTETracker
-from collections import OrderedDict
 
-from tensorrt_inference import TRTInferenceEngine
-from stream_webcam import WebcamVideoStream
- 
-def preprocess_batch(list_nimgs, out_img_shape=(768,960)):
-    '''
-        Preprocess batch images for pose estimation
 
-        input: list cv image
-        output: 
-            tensor image shape [batch, 3, heigth, width] scale [0,1]
-            list raw image for visualization
-    '''
-    out_batch = []
-    raw_imgs = []
-    for nimg in list_nimgs:
-        nimg = letterbox(nimg, out_img_shape, stride=64)[0]
-        raw_imgs.append(nimg.copy())
-        
-        nimg = transforms.ToTensor()(nimg)
-        
-        out_batch.append(nimg.unsqueeze(0))
-    
-    return torch.cat(out_batch, dim=0), raw_imgs
-      
-    
 class PoseTracker():
     '''
         Object tracking for fall detection
@@ -76,9 +55,30 @@ class PoseTracker():
             rm_id = int(rm_obj.track_id)
             if rm_id in self.pose_sequences:
                 del self.pose_sequences[rm_id]
+
                 
-                     
-                
+def preprocess_batch(list_nimgs, out_img_shape=(768,960)):
+    '''
+        Preprocess batch images for pose estimation
+
+        input: list cv image
+        output: 
+            tensor image shape [batch, 3, heigth, width] scale [0,1]
+            list raw image for visualization
+    '''
+    out_batch = []
+    raw_imgs = []
+    for nimg in list_nimgs:
+        nimg = letterbox(nimg, out_img_shape, stride=64)[0]
+        raw_imgs.append(nimg.copy())
+        
+        nimg = transforms.ToTensor()(nimg)
+        
+        out_batch.append(nimg.unsqueeze(0))
+    
+    return torch.cat(out_batch, dim=0), raw_imgs                     
+
+
 def fall_detection(kpt_data, model, img_shape=(768, 960)):
     '''
         input: list tensor keypoints data of 1 person, model 
