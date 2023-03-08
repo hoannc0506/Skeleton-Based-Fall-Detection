@@ -7,3 +7,6 @@ __pycache__/
 demo/
 pretrained/
 
+debug.ipynb
+wandb/
+results.zip
