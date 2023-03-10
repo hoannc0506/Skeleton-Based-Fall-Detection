@@ -10,3 +10,4 @@ demo/
 pretrained/
 debug.ipynb
 wandb/
+requirements.txt
