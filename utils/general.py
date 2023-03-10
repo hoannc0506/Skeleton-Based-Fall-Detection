@@ -10,7 +10,7 @@ from torch.utils.data import Dataset
 
 
 class InferenceDataset(Dataset):
-    def __init__(self, img_paths, out_img_shape=(768, 960)):
+    def __init__(self, img_paths, out_img_shape=(960, 960)):
         self.img_paths = img_paths
         self.out_img_shape = out_img_shape
         

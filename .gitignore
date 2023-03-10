@@ -4,9 +4,9 @@ __pycache__/
 *.jpg
 *.pt
 *.pth
+*.zip
+*.mp4
 demo/
 pretrained/
-
 debug.ipynb
 wandb/
-results.zip

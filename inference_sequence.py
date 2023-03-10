@@ -6,6 +6,7 @@ import torch
 import cv2
 import os
 import time
+import glob
 import numpy as np
 import argparse
 import logging
@@ -18,41 +19,61 @@ from utils.general import *
 from utils.stream_webcam import WebcamVideoStream
 
 from tracker.byte_tracker import BYTETracker
+import re
 
-    
-class VideoReader(object):
+def sort_harup(data):
+    convert = lambda text: int(text) if text.isdigit() else text.lower()
+    alphanum_key = lambda key: [ convert(c) for c in re.split('([0-9]+)', key) ] 
+    return sorted(data, key=alphanum_key)
+
+def read_HARUPjpg(folder):
+    return [os.path.join(folder,f) for f in sort_harup(os.listdir(folder))]
+
+
+class SequenceReader(object):
     '''
-        Read .mp4 video files
+        Read sequence images
     '''
-    def __init__(self, file_name, grab_frame=1, batch_size=8):
-        self.file_name = file_name
+
+    def __init__(self, folder_path, grab_frame=1, batch_size=8):
+        self.folder_path = folder_path
+        if 'harup' in folder_path:
+            self.file_names = read_HARUPjpg(folder_path)
+#             import pdb
+        else:
+            self.file_names = sorted(glob.glob(folder_path+'/*'))
+            
+        self.max_frame = len(self.file_names)
         self.batch_size = batch_size
         self.grab_frame = grab_frame
         self.batch_cnt = 0
-        self.frame_cnt = 0
+        print(self.max_frame)
 
     def __iter__(self):
-        self.cap = cv2.VideoCapture(self.file_name)
-        if not self.cap.isOpened():
-            raise IOError(f'Video {self.file_name} cannot be opened')
+        self.frame_cnt = 0
         return self
 
-    def __next__(self):  
+    def __next__(self):
+        if self.frame_cnt >= self.max_frame:
+            raise StopIteration
+                
         batch_imgs = []
 
         for i in range(self.batch_size):
             # grab 1 frame
-            for idx in range(self.grab_frame):
-                self.cap.grab()
-                self.frame_cnt += 1
-            
-            ret, img = self.cap.read()
-            if not ret:
+            self.frame_cnt += self.grab_frame
+            if self.frame_cnt >= self.max_frame:
                 raise StopIteration
+                
+            img = cv2.imread(self.file_names[self.frame_cnt])
+            
+            if img.shape == 0:
+                raise IOError('Image {} cannot be read'.format(self.file_names[self.frame_cnt]))
 
             batch_imgs.append(img)
             self.frame_cnt += 1
-            
+        
+        
         self.batch_cnt += 1
         return batch_imgs
 
@@ -146,8 +167,9 @@ def detect_fall(kpt_data, model, img_shape=(768, 960)):
     return predict 
 
 
-def inference(img_provider, engine, lstm_model, tracker, device='cuda:0', 
-              img_shape=(768,960), min_length=30, max_length=45, 
+def inference(img_provider, engine, lstm_model, tracker, 
+              device='cuda:0', img_shape=(768,960), 
+              min_length=30, max_length=45, 
               labels=None, visualize=False):
     
     # inference
@@ -156,10 +178,10 @@ def inference(img_provider, engine, lstm_model, tracker, device='cuda:0',
     predicts = []
     
     for batch_imgs in img_provider:
-        
+
         batch_imgs, raw_imgs = preprocess_batch(batch_imgs, out_img_shape=img_shape)
         batch_imgs = batch_imgs.to(device)
-        
+
         # pose estimation
         output_batch = engine(batch_imgs)[0]
         output_batch = nms_kpt(output_batch, conf_thres=0.15, iou_thres=0.5)
@@ -169,7 +191,7 @@ def inference(img_provider, engine, lstm_model, tracker, device='cuda:0',
                 continue
             
             #visualize
-            raw_imgs[idx] = visualize_skeletons(raw_imgs[idx], op, frame_idx=(img_provider.frame_cnt-8+idx))
+            raw_imgs[idx] = visualize_skeletons(raw_imgs[idx], op)
             
             # update pose tracker
             tracker.update(op)
@@ -205,7 +227,7 @@ def inference(img_provider, engine, lstm_model, tracker, device='cuda:0',
                             thickness=3)
                 
                 # remove old pose from pose sequence
-                if len(objposes) >= max_length:
+                if len(objposes) >= max_length: 
                     tracker.pose_sequences[obj_id].remove(objposes[0])
 
                 print(f'Fall detecting: object {obj_id} | predict {predict_class} {torch.max(predict)}')
@@ -234,7 +256,7 @@ def inference(img_provider, engine, lstm_model, tracker, device='cuda:0',
     # create video
         import moviepy.editor as mpy    
         vid = mpy.ImageSequenceClip(visualize_imgs, fps=10)
-        video_name = video_path.split('/')[-1].split('.')[0]
+        video_name = img_provider.folder_path.split('/')[-1]
         save_path = f'results/{video_name}_result.mp4'
         vid.write_videofile(save_path)
     
@@ -246,29 +268,29 @@ def inference(img_provider, engine, lstm_model, tracker, device='cuda:0',
 if __name__ == '__main__':
     
     parser = argparse.ArgumentParser()
-    parser.add_argument('--video-path', type=str, default='demo/fall2.mp4')
+    parser.add_argument('--sequence-path', type=str, default='demo/fall2.mp4')
     parser.add_argument('--grab-frame', type=int, default=1)
     parser.add_argument('--pose-engine', type=str, default='pretrained/yolov5-l6-pose-bs8.engine')
     parser.add_argument('--lstm-weight', type=str, default='weights/keypoints_lstm_v1.pt')
-    parser.add_argument('--img-size', nargs='+', type=int, default=(768, 960))  
+    parser.add_argument('--img-size', nargs='+', type=int, default=[768, 960])  
     parser.add_argument('--min-length', type=int, default=30)
     parser.add_argument('--max-length', type=int, default=45)
 
     parser.add_argument('--visualize', action='store_true')
-
-
+    
     args = parser.parse_args()
     
-    video_path = args.video_path
+    sequence_path = args.sequence_path
     pose_engine = args.pose_engine
     lstm_weight = args.lstm_weight
     img_shape = args.img_size
     is_visualize = args.visualize
     grab_frame = args.grab_frame
-    MAX_LENGTH = args.max_length
     MIN_LENGTH = args.min_length
-    print(vars(args))
+    MAX_LENGTH = args.max_length
     
+    print(vars(args))
+  
     #  load yolopose tensorrt engine
     device = 'cuda:0'
     engine = TRTInferenceEngine(
@@ -292,16 +314,15 @@ if __name__ == '__main__':
     lstm_model = lstm_model.eval().to(device)
     
     # init pose tracker
-    posetracker = PoseTracker(track_thresh=0.5, match_thresh=0.8, img_shape=img_shape)
+    posetracker = PoseTracker(track_thresh=0.5, match_thresh=0.7, img_shape=img_shape)
     
-    # init video reader
-    video_reader = VideoReader(video_path, grab_frame=grab_frame)
+    # init sequence reader
+    sequence_reader = SequenceReader(sequence_path, grab_frame=grab_frame)
     
     # inference
-    output = inference(video_reader, engine, lstm_model, 
+    output = inference(sequence_reader, engine, lstm_model, 
                        posetracker, device, img_shape,
                        MIN_LENGTH, MAX_LENGTH,
                        action_labels, is_visualize)
     
     del engine
-    
