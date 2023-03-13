@@ -11,3 +11,4 @@ pretrained/
 debug.ipynb
 wandb/
 requirements.txt
+train_v2/
