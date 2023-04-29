@@ -8,7 +8,10 @@ __pycache__/
 *.mp4
 demo/
 pretrained/
-debug.ipynb
+*.ipynb
 wandb/
 requirements.txt
 train_v2/
+anots_v2/
+logs/
+annots_v2/

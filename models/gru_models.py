@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 
-class KeypointsLSTM(nn.Module):
+class KeypointsGRU(nn.Module):
     def __init__(
         self,
         num_features,
@@ -13,7 +13,7 @@ class KeypointsLSTM(nn.Module):
         bidirectional=True,
         device = None
     ):
-        super(KeypointsLSTM, self).__init__()
+        super(KeypointsGRU, self).__init__()
         self.num_features = num_features
         self.num_classes = num_classes
         self.num_layers = num_layers
@@ -22,7 +22,7 @@ class KeypointsLSTM(nn.Module):
         self.sequence_length = sequence_length
         self.device = device
         
-        self.lstm = nn.LSTM(
+        self.gru = nn.GRU(
             self.num_features,
             self.hidden_units,
             self.num_layers,
@@ -31,7 +31,7 @@ class KeypointsLSTM(nn.Module):
         )
         
         self.output_layers = nn.Sequential(
-            nn.Linear(2 * hidden_dim if bidirectional else hidden_dim, hidden_dim),
+            nn.Linear(2 * hidden_dim, hidden_dim),
             nn.BatchNorm1d(hidden_dim, momentum=0.01),
             nn.ReLU(),
             nn.Linear(hidden_dim, num_classes),
@@ -43,13 +43,10 @@ class KeypointsLSTM(nn.Module):
         input shape [N, L, num_features]
         '''
         batch_size = x.shape[0]
-        
-        hidden_dim = 2*self.num_layers if self.bidirectional else self.num_layers
+        hidden_dim = 2*self.num_layers
         
         h0 = torch.zeros(hidden_dim, batch_size, self.hidden_units).to(self.device)
-        c0 = torch.zeros(hidden_dim, batch_size, self.hidden_units).to(self.device)
-        
-        x, (hn, _) = self.lstm(x, (h0, c0))
+        x, hn = self.gru(x, h0)
         x = x[:, -1]
         
         return self.output_layers(x)  

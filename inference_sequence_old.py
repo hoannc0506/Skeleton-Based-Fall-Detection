@@ -169,7 +169,6 @@ def inference(img_provider, engine, lstm_model, tracker,
     t_start = time.time()
     visualize_imgs = []
     predicts = []
-    no_background = False
     
     for batch_imgs in img_provider:
 
@@ -183,13 +182,9 @@ def inference(img_provider, engine, lstm_model, tracker,
         for idx, op in enumerate(output_batch):
             if op.shape[0] == 0:
                 continue
-                
-            vis_img = raw_imgs[idx].copy()
-            if no_background:
-                vis_img[...] = 114
-                
+            
             #visualize
-            vis_img = visualize_skeletons(vis_img, op)
+            raw_imgs[idx] = visualize_skeletons(raw_imgs[idx], op)
             
             # update pose tracker
             tracker.update(op)
