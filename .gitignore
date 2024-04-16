@@ -1,5 +1,4 @@
 .ipynb_checkpoints/
-weights/
 __pycache__/
 *.jpg
 *.pt
